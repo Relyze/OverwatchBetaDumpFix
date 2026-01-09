@@ -10,8 +10,8 @@ bool RemapViewOfSection(size_t base_address, size_t region_size);
 
 namespace util {
 
-bool RemoteWrite(SIZE_T BaseAddress, PVOID DestinationAddress, SIZE_T WriteSize);
-bool RemoteRead(SIZE_T BaseAddress, const PVOID SourceAddress, SIZE_T ReadSize);
+bool RemoteWrite(SIZE_T BaseAddress, PVOID DestinationAddress, SIZE_T WriteSize, NTSTATUS* pStatus = nullptr);
+bool RemoteRead(SIZE_T BaseAddress, const PVOID SourceAddress, SIZE_T ReadSize, NTSTATUS* pStatus = nullptr);
 bool GetPageInfo(size_t base_address, size_t range_size,
                  std::vector<MEMORY_BASIC_INFORMATION>& page_info);
 SIZE_T RoundUpToAllocationGranularity(SIZE_T Size);

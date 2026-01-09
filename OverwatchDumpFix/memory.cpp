@@ -16,10 +16,36 @@ static void SetSystemAllocationGranularity()
 
 static bool _RemapViewOfSection(SIZE_T BaseAddress, SIZE_T RegionSize, PVOID CopyBuffer, std::vector<SIZE_T>* ReplacedViewBases = nullptr)
 {
-    // Step 1: Backup the view's content
-    if (!memory::util::RemoteRead(BaseAddress, CopyBuffer, RegionSize)) {
-        pluginLog("Error: failed to backup view at %p: %d.\n", BaseAddress, GetLastError());
-        return false;
+    // Step 1: Backup the view's content (read region by region to handle different protections)
+    SIZE_T currentOffset = 0;
+    while (currentOffset < RegionSize) {
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (!VirtualQueryEx(debuggee.hProcess, PVOID(BaseAddress + currentOffset), &mbi, sizeof(mbi))) {
+            pluginLog("Error: VirtualQueryEx failed at %p: %d.\n", BaseAddress + currentOffset, GetLastError());
+            return false;
+        }
+        
+        // Calculate how much to read from this region
+        SIZE_T regionReadSize = mbi.RegionSize - (BaseAddress + currentOffset - SIZE_T(mbi.BaseAddress));
+        if (currentOffset + regionReadSize > RegionSize) {
+            regionReadSize = RegionSize - currentOffset;
+        }
+        
+        // Skip regions that can't be read (not committed or no access)
+        if (mbi.State != MEM_COMMIT || mbi.Protect == PAGE_NOACCESS || (mbi.Protect & PAGE_GUARD)) {
+            pluginLog("Warning: Skipping unreadable region at %p (State: 0x%X, Protect: 0x%X), filling with zeros.\n", 
+                BaseAddress + currentOffset, mbi.State, mbi.Protect);
+            RtlZeroMemory((PBYTE)CopyBuffer + currentOffset, regionReadSize);
+        } else {
+            NTSTATUS readStatus = 0;
+            if (!memory::util::RemoteRead(BaseAddress + currentOffset, (PBYTE)CopyBuffer + currentOffset, regionReadSize, &readStatus)) {
+                pluginLog("Error: failed to backup view at %p (size: 0x%llX): NTSTATUS 0x%08X.\n", 
+                    BaseAddress + currentOffset, regionReadSize, readStatus);
+                return false;
+            }
+        }
+        
+        currentOffset += regionReadSize;
     }
 
     // Get views to unmap
@@ -84,8 +110,9 @@ static bool _RemapViewOfSection(SIZE_T BaseAddress, SIZE_T RegionSize, PVOID Cop
     }
 
     // Step 5: Restore the view's content
-    if (!memory::util::RemoteWrite(BaseAddress, CopyBuffer, RegionSize)) {
-        pluginLog("Error: failed to restore view at %p: %d.\n", BaseAddress, GetLastError());
+    NTSTATUS writeStatus = 0;
+    if (!memory::util::RemoteWrite(BaseAddress, CopyBuffer, RegionSize, &writeStatus)) {
+        pluginLog("Error: failed to restore view at %p: NTSTATUS 0x%08X.\n", BaseAddress, writeStatus);
         return false;
     }
 
@@ -128,7 +155,7 @@ bool memory::RemapViewOfSection(size_t base_address, size_t region_size) {
 ///////////////////////////////////////////////////////////////////////////////
 // util
 
-bool memory::util::RemoteWrite(SIZE_T BaseAddress, PVOID DestinationAddress, SIZE_T WriteSize)
+bool memory::util::RemoteWrite(SIZE_T BaseAddress, PVOID DestinationAddress, SIZE_T WriteSize, NTSTATUS* pStatus)
 {
     SIZE_T numberOfBytesWritten = 0;
     NTSTATUS status = NtWriteVirtualMemory(
@@ -137,11 +164,13 @@ bool memory::util::RemoteWrite(SIZE_T BaseAddress, PVOID DestinationAddress, SIZ
         DestinationAddress,
         WriteSize,
         &numberOfBytesWritten);
+    if (pStatus)
+        *pStatus = status;
     return status == STATUS_SUCCESS && numberOfBytesWritten == WriteSize;
 }
 
 bool memory::util::RemoteRead(SIZE_T BaseAddress, const PVOID SourceAddress,
-                              SIZE_T ReadSize)
+                              SIZE_T ReadSize, NTSTATUS* pStatus)
 {
     SIZE_T numberOfBytesRead = 0;
     NTSTATUS status = NtReadVirtualMemory(
@@ -150,6 +179,8 @@ bool memory::util::RemoteRead(SIZE_T BaseAddress, const PVOID SourceAddress,
         SourceAddress,
         ReadSize,
         &numberOfBytesRead);
+    if (pStatus)
+        *pStatus = status;
     return status == STATUS_SUCCESS && numberOfBytesRead == ReadSize;
 }
 
