@@ -23,6 +23,8 @@
 *.tlog
 *.user
 *.zip
+*.dp64
+*.dp64.recipe
 
 .vs/*
 bin/*
